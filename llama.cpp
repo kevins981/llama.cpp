@@ -87,6 +87,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <iostream>
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
@@ -6806,6 +6807,8 @@ static struct ggml_tensor * llm_build_moe_ffn(
     ggml_tensor * probs = ggml_soft_max(ctx, logits); // [n_expert, n_tokens]
     cb(probs, "ffn_moe_probs", il);
 
+    //printf("KEVIN DEBUG: in MoE \n");
+    
     // select experts
     ggml_tensor * selected_experts = ggml_top_k(ctx, probs, n_expert_used); // [n_expert_used, n_tokens]
     cb(selected_experts->src[0], "ffn_moe_argsort", il);
@@ -12194,6 +12197,48 @@ static int llama_decode_internal(
 
         llama_graph_compute(lctx, gf, n_threads);
 
+        std::cout << std::endl << "--------Layer 0 probs" << std::endl;
+        // The tensor after the softmax in the feed forward layer.
+        // Grab the tensor from the compute graph. This tensor is define in llm_build_moe_ffn()
+        struct ggml_tensor * probs = ggml_graph_get_tensor(gf, "ffn_moe_probs-0");
+        // Reference: https://github.com/ggerganov/ggml/blob/master/include/ggml/ggml.h#L139
+        int probs_nx = probs->ne[0];
+        int probs_ny = probs->ne[1];
+        for (int y = 0; y < probs_ny; y++) {
+           for (int x = 0; x < probs_nx; x++) {
+               std::cout << *(float *) ((char *) probs->data + y*probs->nb[1] + x*probs->nb[0]) << ",";
+           }
+          std::cout  << std::endl;
+        }
+
+        std::cout << std::endl << "-----Layer 0 selected experts " << std::endl;
+        // Grab the tensor from the compute graph. This tensor is define in llm_build_moe_ffn()
+        // Indicates which two experts (0 to 7) are selected in this layer.
+        struct ggml_tensor * selected_experts = ggml_graph_get_tensor(gf, "ffn_moe_topk-0");
+        // Reference: https://github.com/ggerganov/ggml/blob/master/include/ggml/ggml.h#L139
+        int selected_experts_nx = selected_experts->ne[0];
+        int selected_experts_ny = selected_experts->ne[1];
+        for (int y = 0; y < selected_experts_ny; y++) {
+           for (int x = 0; x < selected_experts_nx; x++) {
+               std::cout << *(int *) ((char *) selected_experts->data + y*selected_experts->nb[1] + x*selected_experts->nb[0]) << ",";
+           }
+          std::cout  << std::endl;
+        }
+        
+        // Notes to Kan: seems like the values in ffn_moe_topk-0 make sense, but the values in ffn_moe_probs-0 seem wrong.
+        // The output of softmax should all be positive, but I see lots of negative values.
+
+        // Reference: https://github.com/ggerganov/ggml/blob/mas
+
+        // Another way to log tensor values.
+        //std::vector<int> tmp_buf(ggml_nelements(selected_experts));
+        //// ggml_backend_tensor_get usage: https://github.com/ggerganov/whisper.cpp/discussions/1489
+        //ggml_backend_tensor_get(selected_experts, tmp_buf.data(), 0, ggml_nbytes(selected_experts));
+        //for (int i: tmp_buf) {
+        //  std::cout << i << ",";
+        //}
+        //std::cout << std::endl;
+
         // update the kv ring buffer
         {
             kv_self.head += n_tokens;
@@ -12211,9 +12256,7 @@ static int llama_decode_internal(
 #endif
 
         // plot the computation graph in dot format (for debugging purposes)
-        //if (n_past%100 == 0) {
-        //    ggml_graph_dump_dot(gf, NULL, "llama.dot");
-        //}
+        //ggml_graph_dump_dot(gf, NULL, "mixtral.dot");
 
         // extract logits
         if (res) {
